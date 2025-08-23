@@ -94,14 +94,14 @@ jobs:
       continue-on-error: true
 
     - name: Upload CLI artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: shutdown-reminder-cli-${{ matrix.platform }}
         path: dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}
 
     - name: Upload GUI artifacts
       if: matrix.gui_version == true
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: shutdown-reminder-gui-${{ matrix.platform }}
         path: dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}
@@ -122,7 +122,7 @@ jobs:
 
     - name: Upload release assets
       if: startsWith(github.ref, 'refs/tags/')
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: release-${{ matrix.platform }}
         path: shutdown-reminder-${{ matrix.platform }}.*
@@ -133,16 +133,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
 
     - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
+        name: Release ${{ github.ref_name }}
         body: |
           ## 定时关机提醒程序 Shutdown Reminder
 
@@ -166,16 +162,5 @@ jobs:
 
           ⚠️ **Warning**: This application can shut down your computer. Use with caution.
           ⚠️ **警告**: 此应用程序可以关闭您的计算机，请谨慎使用。
-        draft: false
-        prerelease: false
-
-    - name: Upload Release Assets
-      run: |
-        for file in release-*/*; do
-          if [ -f "$file" ]; then
-            echo "Uploading $file..."
-            gh release upload ${{ github.ref_name }} "$file" --clobber
-          fi
-        done
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        files: |
+          release-*/*
