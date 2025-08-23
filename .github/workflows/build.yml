@@ -128,115 +128,94 @@ jobs:
         echo "=== VERIFICATION COMPLETE ==="
       shell: bash
 
-    - name: Test CLI executable (dry run)
+    - name: Create platform package
       run: |
-        echo "Testing CLI executable..."
-        CLI_PATH="dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}"
-        echo "Looking for executable at: $CLI_PATH"
+        echo "Creating platform package..."
+        mkdir -p package
         
-        if [ -f "$CLI_PATH" ]; then
-          echo "✅ CLI executable found"
-          # Set executable permissions on Unix-like systems
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            echo "Setting executable permissions..."
-            chmod +x "$CLI_PATH"
-          fi
-          echo "Testing version command..."
-          "$CLI_PATH" --version || echo "Version check completed with status $?"
+        # Copy CLI executable
+        CLI_FILE="dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+        if [ -f "$CLI_FILE" ]; then
+          echo "✅ CLI executable found: $CLI_FILE"
+          cp "$CLI_FILE" package/
         else
-          echo "❌ CLI executable not found at $CLI_PATH"
-          echo "Contents of dist/:"
-          ls -la dist/ || echo "No dist directory"
+          echo "❌ CLI executable not found: $CLI_FILE"
           exit 1
         fi
+        
+        # Copy GUI executable if it exists
+        if [ "${{ matrix.gui_version }}" = "true" ]; then
+          GUI_FILE="dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+          if [ -f "$GUI_FILE" ]; then
+            echo "✅ GUI executable found: $GUI_FILE"
+            cp "$GUI_FILE" package/
+          else
+            echo "⚠️ GUI executable not found (expected on some platforms): $GUI_FILE"
+          fi
+        fi
+        
+        # Copy documentation
+        cp README.md package/ || echo "README.md not found"
+        
+        echo "Package contents:"
+        ls -la package/
       shell: bash
-      continue-on-error: true
 
-    - name: Upload CLI artifacts
+    - name: Upload platform package
       uses: actions/upload-artifact@v4
       with:
-        name: shutdown-reminder-cli-${{ matrix.platform }}
-        path: dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}
+        name: shutdown-reminder-${{ matrix.platform }}
+        path: package/
         if-no-files-found: error
         retention-days: 30
 
-    - name: Verify CLI artifact upload
+    - name: Verify package upload
       run: |
-        CLI_FILE="dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}"
-        echo "Verifying CLI artifact before upload..."
-        if [ -f "$CLI_FILE" ]; then
-          echo "✅ CLI artifact verified for upload: $CLI_FILE"
-          echo "File size: $(stat -c%s "$CLI_FILE" 2>/dev/null || stat -f%z "$CLI_FILE" 2>/dev/null || echo "unknown") bytes"
-        else
-          echo "❌ CLI artifact missing before upload!"
-          exit 1
-        fi
-      shell: bash
-
-    - name: Upload GUI artifacts
-      if: matrix.gui_version == true
-      uses: actions/upload-artifact@v4
-      with:
-        name: shutdown-reminder-gui-${{ matrix.platform }}
-        path: dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}
-        if-no-files-found: ignore
-        retention-days: 30
-      continue-on-error: true
-
-    - name: Create release assets (on tag)
-      if: startsWith(github.ref, 'refs/tags/')
-      run: |
-        echo "Creating release assets..."
-        mkdir -p release
-        
-        # Copy executables to release directory
-        if [ -d "dist" ]; then
-          echo "Copying files from dist/ to release/"
-          find dist/ -name "*.exe" -o -name "shutdown-reminder-*" -type f | while read file; do
-            echo "Copying: $file"
-            cp "$file" release/ || echo "Failed to copy $file"
+        echo "Verifying package contents..."
+        if [ -d "package" ] && [ "$(ls -A package)" ]; then
+          echo "✅ Package directory contains files:"
+          ls -la package/
+          for file in package/*; do
+            if [ -f "$file" ]; then
+              echo "  - $(basename "$file"): $(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo "unknown size") bytes"
+            fi
           done
         else
-          echo "No dist directory found"
+          echo "❌ Package directory is empty or missing!"
+          exit 1
+        fi
+      shell: bash
+
+    - name: Create release archive (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        echo "Creating release archive..."
+        
+        # Use package directory created earlier
+        if [ ! -d "package" ] || [ ! "$(ls -A package)" ]; then
+          echo "❌ Package directory is empty or missing!"
           exit 1
         fi
         
-        echo "Release directory contents:"
-        ls -la release/ || echo "Release directory is empty"
-      shell: bash
-
-    - name: Create Windows archive
-      if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
-      run: |
-        Write-Host "Creating Windows ZIP archive..."
-        $files = Get-ChildItem -Path "release" -File
-        if ($files.Count -gt 0) {
-          Compress-Archive -Path "release\*" -DestinationPath "shutdown-reminder-${{ matrix.platform }}.zip" -Force
-          Write-Host "Created Windows archive:"
-          Get-ChildItem -Name "*.zip"
-        } else {
-          Write-Host "No files found in release directory"
-          exit 1
-        }
-      shell: powershell
-
-    - name: Create Unix archive  
-      if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows'
-      run: |
-        echo "Creating Unix TAR.GZ archive..."
-        cd release
-        if [ "$(ls -A .)" ]; then
+        # Create archive based on platform
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          echo "Creating Windows ZIP archive..."
+          cd package
+          powershell -Command "Compress-Archive -Path '*' -DestinationPath '../shutdown-reminder-${{ matrix.platform }}.zip' -Force"
+          cd ..
+          echo "✅ Created Windows archive:"
+          ls -la shutdown-reminder-${{ matrix.platform }}.zip
+        else
+          echo "Creating Unix TAR.GZ archive..."
+          cd package
           tar -czf ../shutdown-reminder-${{ matrix.platform }}.tar.gz *
           cd ..
-          echo "Created Unix archive:"
-          ls -la *.tar.gz
-        else
-          echo "No files found in release directory"
-          exit 1
+          echo "✅ Created Unix archive:"
+          ls -la shutdown-reminder-${{ matrix.platform }}.tar.gz
         fi
       shell: bash
 
-    - name: Upload release assets
+    - name: Upload release archive
       if: startsWith(github.ref, 'refs/tags/')
       uses: actions/upload-artifact@v4
       with:
@@ -247,28 +226,6 @@ jobs:
         if-no-files-found: ignore
         retention-days: 90
 
-    - name: Verify release assets
-      if: startsWith(github.ref, 'refs/tags/')
-      run: |
-        echo "=== RELEASE ASSETS VERIFICATION ==="
-        if [ "${{ runner.os }}" = "Windows" ]; then
-          ARCHIVE_FILE="shutdown-reminder-${{ matrix.platform }}.zip"
-        else
-          ARCHIVE_FILE="shutdown-reminder-${{ matrix.platform }}.tar.gz"
-        fi
-        
-        echo "Looking for release archive: $ARCHIVE_FILE"
-        if [ -f "$ARCHIVE_FILE" ]; then
-          echo "✅ Release archive found: $ARCHIVE_FILE"
-          echo "Archive size: $(stat -c%s "$ARCHIVE_FILE" 2>/dev/null || stat -f%z "$ARCHIVE_FILE" 2>/dev/null || echo "unknown") bytes"
-        else
-          echo "❌ Release archive not found: $ARCHIVE_FILE"
-          echo "Available files:"
-          ls -la *.zip *.tar.gz 2>/dev/null || echo "No archive files found"
-        fi
-        echo "=== RELEASE VERIFICATION COMPLETE ==="
-      shell: bash
-
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
@@ -278,13 +235,42 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         merge-multiple: true
+        path: artifacts/
         
     - name: List downloaded artifacts
       run: |
-        echo "Downloaded artifacts:"
-        find . -type f -name "*" | head -20
-        echo "Looking for release files:"
-        find . -name "*.zip" -o -name "*.tar.gz" | head -10
+        echo "=== DOWNLOADED ARTIFACTS ==="
+        find artifacts/ -type f | sort
+        echo ""
+        echo "=== PLATFORM PACKAGES ==="
+        find artifacts/ -name "shutdown-reminder-*" -type f | head -20
+        echo ""
+        echo "=== RELEASE ARCHIVES ==="
+        find artifacts/ -name "*.zip" -o -name "*.tar.gz" | head -10
+        echo "=== END ARTIFACT LISTING ==="
+
+    - name: Organize release files
+      run: |
+        echo "Organizing release files..."
+        mkdir -p release
+        
+        # Copy all archives to release directory
+        find artifacts/ -name "*.zip" -o -name "*.tar.gz" -type f | while read file; do
+          echo "Copying archive: $file"
+          cp "$file" release/
+        done
+        
+        # Copy individual executables if no archives found
+        if [ ! "$(ls -A release/)" ]; then
+          echo "No archives found, copying individual executables..."
+          find artifacts/ -name "shutdown-reminder-*" -type f -executable | while read file; do
+            echo "Copying executable: $file"
+            cp "$file" release/
+          done
+        fi
+        
+        echo "Release directory contents:"
+        ls -la release/
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -313,7 +299,5 @@ jobs:
 
           ⚠️ **Warning**: This application can shut down your computer. Use with caution.
           ⚠️ **警告**: 此应用程序可以关闭您的计算机，请谨慎使用。
-        files: |
-          **/*.zip
-          **/*.tar.gz
+        files: release/*
         fail_on_unmatched_files: false
