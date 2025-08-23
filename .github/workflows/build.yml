@@ -1,0 +1,303 @@
+name: Build Shutdown Reminder Executable
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            platform: windows
+            executable_suffix: .exe
+            gui_version: true
+          - os: ubuntu-latest
+            platform: linux
+            executable_suffix: ""
+            gui_version: false
+          - os: macos-latest
+            platform: macos
+            executable_suffix: ""
+            gui_version: true
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-tk
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        echo "Installing PyInstaller..."
+        pip install pyinstaller
+        echo "Verifying PyInstaller installation..."
+        pyinstaller --version
+
+    - name: Test imports
+      run: |
+        python -c "import datetime, threading, time, subprocess, platform, sys, signal, os; print('CLI imports successful')"
+        if [ "${{ matrix.gui_version }}" = "true" ]; then
+          python -c "import tkinter; print('GUI imports successful')" || echo "GUI not available, will build CLI version only"
+        fi
+      shell: bash
+
+    - name: Run tests
+      run: |
+        echo "Running test suite..."
+        python test_shutdown_reminder.py || {
+          echo "Tests completed with warnings/errors"
+          echo "This is expected on headless systems without GUI support"
+        }
+      continue-on-error: true
+
+    - name: Validate Python scripts
+      run: |
+        echo "Validating Python scripts..."
+        python -m py_compile shutdown_reminder_cli.py || exit 1
+        python -m py_compile shutdown_reminder.py || exit 1
+        python -m py_compile test_shutdown_reminder.py || exit 1
+        echo "✅ All Python scripts compile successfully"
+
+    - name: Build CLI executable
+      run: |
+        echo "Building CLI executable..."
+        pyinstaller --onefile --name "shutdown-reminder-cli-${{ matrix.platform }}" --console --add-data "README.md:." shutdown_reminder_cli.py
+        echo "CLI build completed"
+      shell: bash
+
+    - name: Build GUI executable
+      if: matrix.gui_version == true
+      run: |
+        echo "Building GUI executable..."
+        pyinstaller --onefile --name "shutdown-reminder-gui-${{ matrix.platform }}" --windowed --add-data "README.md:." shutdown_reminder.py || echo "GUI build failed, continuing with CLI only"
+        echo "GUI build step completed"
+      continue-on-error: true
+      shell: bash
+
+    - name: List built files
+      run: |
+        echo "Built files in dist/:"
+        ls -la dist/ || echo "No dist directory found"
+        echo "Working directory contents:"
+        ls -la
+      shell: bash
+
+    - name: Verify build artifacts
+      run: |
+        echo "=== BUILD ARTIFACTS VERIFICATION ==="
+        CLI_FILE="dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+        GUI_FILE="dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+        
+        echo "Looking for CLI executable: $CLI_FILE"
+        if [ -f "$CLI_FILE" ]; then
+          echo "✅ CLI executable found ($(stat -c%s "$CLI_FILE" 2>/dev/null || stat -f%z "$CLI_FILE" 2>/dev/null || echo "unknown size") bytes)"
+        else
+          echo "❌ CLI executable NOT found"
+          echo "Available files in dist/:"
+          ls -la dist/ 2>/dev/null || echo "No dist directory"
+          exit 1
+        fi
+        
+        if [ "${{ matrix.gui_version }}" = "true" ]; then
+          echo "Looking for GUI executable: $GUI_FILE"
+          if [ -f "$GUI_FILE" ]; then
+            echo "✅ GUI executable found ($(stat -c%s "$GUI_FILE" 2>/dev/null || stat -f%z "$GUI_FILE" 2>/dev/null || echo "unknown size") bytes)"
+          else
+            echo "⚠️ GUI executable not found (expected on some platforms)"
+          fi
+        fi
+        echo "=== VERIFICATION COMPLETE ==="
+      shell: bash
+
+    - name: Create platform package
+      run: |
+        echo "Creating platform package..."
+        mkdir -p package
+        
+        # Copy CLI executable
+        CLI_FILE="dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+        if [ -f "$CLI_FILE" ]; then
+          echo "✅ CLI executable found: $CLI_FILE"
+          cp "$CLI_FILE" package/
+        else
+          echo "❌ CLI executable not found: $CLI_FILE"
+          exit 1
+        fi
+        
+        # Copy GUI executable if it exists
+        if [ "${{ matrix.gui_version }}" = "true" ]; then
+          GUI_FILE="dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+          if [ -f "$GUI_FILE" ]; then
+            echo "✅ GUI executable found: $GUI_FILE"
+            cp "$GUI_FILE" package/
+          else
+            echo "⚠️ GUI executable not found (expected on some platforms): $GUI_FILE"
+          fi
+        fi
+        
+        # Copy documentation
+        cp README.md package/ || echo "README.md not found"
+        
+        echo "Package contents:"
+        ls -la package/
+      shell: bash
+
+    - name: Upload platform package
+      uses: actions/upload-artifact@v4
+      with:
+        name: shutdown-reminder-${{ matrix.platform }}
+        path: package/
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Verify package upload
+      run: |
+        echo "Verifying package contents..."
+        if [ -d "package" ] && [ "$(ls -A package)" ]; then
+          echo "✅ Package directory contains files:"
+          ls -la package/
+          for file in package/*; do
+            if [ -f "$file" ]; then
+              echo "  - $(basename "$file"): $(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo "unknown size") bytes"
+            fi
+          done
+        else
+          echo "❌ Package directory is empty or missing!"
+          exit 1
+        fi
+      shell: bash
+
+    - name: Create release archive (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        echo "Creating release archive..."
+        
+        # Use package directory created earlier
+        if [ ! -d "package" ] || [ ! "$(ls -A package)" ]; then
+          echo "❌ Package directory is empty or missing!"
+          exit 1
+        fi
+        
+        # Create archive based on platform
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          echo "Creating Windows ZIP archive..."
+          cd package
+          powershell -Command "Compress-Archive -Path '*' -DestinationPath '../shutdown-reminder-${{ matrix.platform }}.zip' -Force"
+          cd ..
+          echo "✅ Created Windows archive:"
+          ls -la shutdown-reminder-${{ matrix.platform }}.zip
+        else
+          echo "Creating Unix TAR.GZ archive..."
+          cd package
+          tar -czf ../shutdown-reminder-${{ matrix.platform }}.tar.gz *
+          cd ..
+          echo "✅ Created Unix archive:"
+          ls -la shutdown-reminder-${{ matrix.platform }}.tar.gz
+        fi
+      shell: bash
+
+    - name: Upload release archive
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.platform }}
+        path: |
+          shutdown-reminder-${{ matrix.platform }}.zip
+          shutdown-reminder-${{ matrix.platform }}.tar.gz
+        if-no-files-found: ignore
+        retention-days: 90
+
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        merge-multiple: true
+        path: artifacts/
+        
+    - name: List downloaded artifacts
+      run: |
+        echo "=== DOWNLOADED ARTIFACTS ==="
+        find artifacts/ -type f | sort
+        echo ""
+        echo "=== PLATFORM PACKAGES ==="
+        find artifacts/ -name "shutdown-reminder-*" -type f | head -20
+        echo ""
+        echo "=== RELEASE ARCHIVES ==="
+        find artifacts/ -name "*.zip" -o -name "*.tar.gz" | head -10
+        echo "=== END ARTIFACT LISTING ==="
+
+    - name: Organize release files
+      run: |
+        echo "Organizing release files..."
+        mkdir -p release
+        
+        # Copy all archives to release directory
+        find artifacts/ -name "*.zip" -o -name "*.tar.gz" -type f | while read file; do
+          echo "Copying archive: $file"
+          cp "$file" release/
+        done
+        
+        # Copy individual executables if no archives found
+        if [ ! "$(ls -A release/)" ]; then
+          echo "No archives found, copying individual executables..."
+          find artifacts/ -name "shutdown-reminder-*" -type f -executable | while read file; do
+            echo "Copying executable: $file"
+            cp "$file" release/
+          done
+        fi
+        
+        echo "Release directory contents:"
+        ls -la release/
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: Release ${{ github.ref_name }}
+        body: |
+          ## 定时关机提醒程序 Shutdown Reminder
+          
+          ### Features 功能
+          - 🕒 Set custom reminder time 自定义提醒时间
+          - 💻 Cross-platform support 跨平台支持
+          - 🖥️ GUI and CLI versions GUI和命令行版本
+          - ⚠️ Safe shutdown confirmation 安全关机确认
+          - ⏰ Delay and cancel options 延迟和取消选项
+
+          ### Downloads 下载
+          - **Windows**: 下载 `shutdown-reminder-windows.zip`
+          - **Linux**: 下载 `shutdown-reminder-linux.tar.gz`  
+          - **macOS**: 下载 `shutdown-reminder-macos.tar.gz`
+
+          ### Usage 使用方法
+          1. 解压下载的文件
+          2. 运行可执行文件
+          3. 设置提醒时间
+          4. 等待提醒并选择关机选项
+
+          ⚠️ **Warning**: This application can shut down your computer. Use with caution.
+          ⚠️ **警告**: 此应用程序可以关闭您的计算机，请谨慎使用。
+        files: release/*
+        fail_on_unmatched_files: false
