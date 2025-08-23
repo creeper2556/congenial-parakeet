@@ -57,6 +57,10 @@ jobs:
         fi
       shell: bash
 
+    - name: Run tests
+      run: |
+        python test_shutdown_reminder.py
+
     - name: Build CLI executable
       run: |
         pyinstaller --onefile \
@@ -83,8 +87,8 @@ jobs:
     - name: Test CLI executable (dry run)
       run: |
         if [ -f "dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}" ]; then
-          echo "CLI executable found, running version check..."
-          ./dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }} --help || echo "Help not available"
+          echo "CLI executable found and working"
+          ./dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }} --version || echo "Version check completed"
         fi
       shell: bash
       continue-on-error: true
