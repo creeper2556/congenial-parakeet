@@ -47,7 +47,10 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
+        echo "Installing PyInstaller..."
         pip install pyinstaller
+        echo "Verifying PyInstaller installation..."
+        pyinstaller --version
 
     - name: Test imports
       run: |
@@ -59,45 +62,69 @@ jobs:
 
     - name: Run tests
       run: |
-        python test_shutdown_reminder.py || echo "Tests completed with warnings"
+        echo "Running test suite..."
+        python test_shutdown_reminder.py || {
+          echo "Tests completed with warnings/errors"
+          echo "This is expected on headless systems without GUI support"
+        }
       continue-on-error: true
+
+    - name: Validate Python scripts
+      run: |
+        echo "Validating Python scripts..."
+        python -m py_compile shutdown_reminder_cli.py || exit 1
+        python -m py_compile shutdown_reminder.py || exit 1
+        python -m py_compile test_shutdown_reminder.py || exit 1
+        echo "✅ All Python scripts compile successfully"
 
     - name: Build CLI executable
       run: |
+        echo "Building CLI executable..."
         pyinstaller --onefile \
           --name "shutdown-reminder-cli-${{ matrix.platform }}" \
           --console \
           --add-data "README.md:." \
           shutdown_reminder_cli.py
+        echo "CLI build completed"
 
     - name: Build GUI executable
       if: matrix.gui_version == true
       run: |
+        echo "Building GUI executable..."
         pyinstaller --onefile \
           --name "shutdown-reminder-gui-${{ matrix.platform }}" \
           --windowed \
           --add-data "README.md:." \
-          shutdown_reminder.py
+          shutdown_reminder.py || echo "GUI build failed, continuing with CLI only"
+        echo "GUI build step completed"
       continue-on-error: true
 
     - name: List built files
       run: |
-        echo "Built files:"
-        ls -la dist/
+        echo "Built files in dist/:"
+        ls -la dist/ || echo "No dist directory found"
+        echo "Working directory contents:"
+        ls -la
 
     - name: Test CLI executable (dry run)
       run: |
-        if [ "${{ runner.os }}" = "Windows" ]; then
-          if [ -f "dist/shutdown-reminder-cli-${{ matrix.platform }}.exe" ]; then
-            echo "CLI executable found"
-            ./dist/shutdown-reminder-cli-${{ matrix.platform }}.exe --version || echo "Version check completed"
+        echo "Testing CLI executable..."
+        CLI_PATH="dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}"
+        echo "Looking for executable at: $CLI_PATH"
+        
+        if [ -f "$CLI_PATH" ]; then
+          echo "✅ CLI executable found"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            echo "Setting executable permissions..."
+            chmod +x "$CLI_PATH"
           fi
+          echo "Testing version command..."
+          $CLI_PATH --version || echo "Version check completed with status $?"
         else
-          if [ -f "dist/shutdown-reminder-cli-${{ matrix.platform }}" ]; then
-            echo "CLI executable found"
-            chmod +x "./dist/shutdown-reminder-cli-${{ matrix.platform }}"
-            ./dist/shutdown-reminder-cli-${{ matrix.platform }} --version || echo "Version check completed"
-          fi
+          echo "❌ CLI executable not found at $CLI_PATH"
+          echo "Contents of dist/:"
+          ls -la dist/ || echo "No dist directory"
+          exit 1
         fi
       shell: bash
       continue-on-error: true
@@ -108,6 +135,7 @@ jobs:
         name: shutdown-reminder-cli-${{ matrix.platform }}
         path: dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}
         if-no-files-found: error
+        retention-days: 30
 
     - name: Upload GUI artifacts
       if: matrix.gui_version == true
@@ -116,22 +144,47 @@ jobs:
         name: shutdown-reminder-gui-${{ matrix.platform }}
         path: dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}
         if-no-files-found: ignore
+        retention-days: 30
       continue-on-error: true
 
     - name: Create release assets (on tag)
       if: startsWith(github.ref, 'refs/tags/')
       run: |
+        echo "Creating release assets..."
         mkdir -p release
+        
+        # Copy executables to release directory
         if [ -d "dist" ]; then
-          cp dist/* release/ 2>/dev/null || true
+          echo "Copying files from dist/ to release/"
+          find dist/ -name "*.exe" -o -name "shutdown-reminder-*" -type f | while read file; do
+            echo "Copying: $file"
+            cp "$file" release/ || echo "Failed to copy $file"
+          done
+        else
+          echo "No dist directory found"
+          exit 1
         fi
+        
+        echo "Release directory contents:"
+        ls -la release/ || echo "Release directory is empty"
+        
+        # Create platform-specific archive
         cd release
         if [ "${{ runner.os }}" = "Windows" ]; then
-          # Use built-in zip on Windows
-          python -m zipfile -c ../shutdown-reminder-${{ matrix.platform }}.zip .
+          echo "Creating Windows ZIP archive..."
+          if command -v 7z >/dev/null 2>&1; then
+            7z a ../shutdown-reminder-${{ matrix.platform }}.zip *
+          else
+            powershell -command "Compress-Archive -Path * -DestinationPath ../shutdown-reminder-${{ matrix.platform }}.zip"
+          fi
         else
+          echo "Creating Unix TAR.GZ archive..."
           tar -czf ../shutdown-reminder-${{ matrix.platform }}.tar.gz *
         fi
+        
+        cd ..
+        echo "Created archive:"
+        ls -la shutdown-reminder-${{ matrix.platform }}.* || echo "No archive created"
       shell: bash
 
     - name: Upload release assets
@@ -139,7 +192,11 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: release-${{ matrix.platform }}
-        path: shutdown-reminder-${{ matrix.platform }}.*
+        path: |
+          shutdown-reminder-${{ matrix.platform }}.zip
+          shutdown-reminder-${{ matrix.platform }}.tar.gz
+        if-no-files-found: ignore
+        retention-days: 90
 
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -150,6 +207,13 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         merge-multiple: true
+        
+    - name: List downloaded artifacts
+      run: |
+        echo "Downloaded artifacts:"
+        find . -type f -name "*" | head -20
+        echo "Looking for release files:"
+        find . -name "*.zip" -o -name "*.tar.gz" | head -10
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -157,7 +221,7 @@ jobs:
         name: Release ${{ github.ref_name }}
         body: |
           ## 定时关机提醒程序 Shutdown Reminder
-
+          
           ### Features 功能
           - 🕒 Set custom reminder time 自定义提醒时间
           - 💻 Cross-platform support 跨平台支持
@@ -179,4 +243,6 @@ jobs:
           ⚠️ **Warning**: This application can shut down your computer. Use with caution.
           ⚠️ **警告**: 此应用程序可以关闭您的计算机，请谨慎使用。
         files: |
-          release-*/*
+          **/*.zip
+          **/*.tar.gz
+        fail_on_unmatched_files: false

@@ -225,7 +225,7 @@ class ShutdownReminderApp:
             system = platform.system()
             
             # Show final confirmation
-            if messagebox.askyesno("最终确认", "确定要关闭计算机吗？\n\n点击"是"将在3秒后开始关机\n点击"否"取消关机", icon="warning"):
+            if messagebox.askyesno("最终确认", "确定要关闭计算机吗？\n\n点击\"是\"将在3秒后开始关机\n点击\"否\"取消关机", icon="warning"):
                 
                 # Show countdown
                 countdown_window = tk.Toplevel(self.root)
