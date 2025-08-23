@@ -1,0 +1,177 @@
+name: Build Shutdown Reminder Executable
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            platform: windows
+            executable_suffix: .exe
+            gui_version: true
+          - os: ubuntu-latest
+            platform: linux
+            executable_suffix: ""
+            gui_version: false
+          - os: macos-latest
+            platform: macos
+            executable_suffix: ""
+            gui_version: true
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-tk
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+
+    - name: Test imports
+      run: |
+        python -c "import datetime, threading, time, subprocess, platform, sys, signal, os; print('CLI imports successful')"
+        if [ "${{ matrix.gui_version }}" = "true" ]; then
+          python -c "import tkinter; print('GUI imports successful')" || echo "GUI not available, will build CLI version only"
+        fi
+      shell: bash
+
+    - name: Build CLI executable
+      run: |
+        pyinstaller --onefile \
+          --name "shutdown-reminder-cli-${{ matrix.platform }}" \
+          --console \
+          --add-data "README.md:." \
+          shutdown_reminder_cli.py
+
+    - name: Build GUI executable
+      if: matrix.gui_version == true
+      run: |
+        pyinstaller --onefile \
+          --name "shutdown-reminder-gui-${{ matrix.platform }}" \
+          --windowed \
+          --add-data "README.md:." \
+          shutdown_reminder.py
+      continue-on-error: true
+
+    - name: List built files
+      run: |
+        echo "Built files:"
+        ls -la dist/
+
+    - name: Test CLI executable (dry run)
+      run: |
+        if [ -f "dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}" ]; then
+          echo "CLI executable found, running version check..."
+          ./dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }} --help || echo "Help not available"
+        fi
+      shell: bash
+      continue-on-error: true
+
+    - name: Upload CLI artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: shutdown-reminder-cli-${{ matrix.platform }}
+        path: dist/shutdown-reminder-cli-${{ matrix.platform }}${{ matrix.executable_suffix }}
+
+    - name: Upload GUI artifacts
+      if: matrix.gui_version == true
+      uses: actions/upload-artifact@v3
+      with:
+        name: shutdown-reminder-gui-${{ matrix.platform }}
+        path: dist/shutdown-reminder-gui-${{ matrix.platform }}${{ matrix.executable_suffix }}
+      continue-on-error: true
+
+    - name: Create release assets (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        mkdir -p release
+        cp dist/* release/ 2>/dev/null || true
+        cd release
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          7z a ../shutdown-reminder-${{ matrix.platform }}.zip *
+        else
+          tar -czf ../shutdown-reminder-${{ matrix.platform }}.tar.gz *
+        fi
+      shell: bash
+
+    - name: Upload release assets
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-${{ matrix.platform }}
+        path: shutdown-reminder-${{ matrix.platform }}.*
+
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## 定时关机提醒程序 Shutdown Reminder
+
+          ### Features 功能
+          - 🕒 Set custom reminder time 自定义提醒时间
+          - 💻 Cross-platform support 跨平台支持
+          - 🖥️ GUI and CLI versions GUI和命令行版本
+          - ⚠️ Safe shutdown confirmation 安全关机确认
+          - ⏰ Delay and cancel options 延迟和取消选项
+
+          ### Downloads 下载
+          - **Windows**: 下载 `shutdown-reminder-windows.zip`
+          - **Linux**: 下载 `shutdown-reminder-linux.tar.gz`  
+          - **macOS**: 下载 `shutdown-reminder-macos.tar.gz`
+
+          ### Usage 使用方法
+          1. 解压下载的文件
+          2. 运行可执行文件
+          3. 设置提醒时间
+          4. 等待提醒并选择关机选项
+
+          ⚠️ **Warning**: This application can shut down your computer. Use with caution.
+          ⚠️ **警告**: 此应用程序可以关闭您的计算机，请谨慎使用。
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      run: |
+        for file in release-*/*; do
+          if [ -f "$file" ]; then
+            echo "Uploading $file..."
+            gh release upload ${{ github.ref_name }} "$file" --clobber
+          fi
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
