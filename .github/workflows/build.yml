@@ -86,6 +86,7 @@ jobs:
           --add-data "README.md:." \
           shutdown_reminder_cli.py
         echo "CLI build completed"
+      shell: bash
 
     - name: Build GUI executable
       if: matrix.gui_version == true
@@ -98,6 +99,7 @@ jobs:
           shutdown_reminder.py || echo "GUI build failed, continuing with CLI only"
         echo "GUI build step completed"
       continue-on-error: true
+      shell: bash
 
     - name: List built files
       run: |
