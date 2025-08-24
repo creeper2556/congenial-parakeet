@@ -13,6 +13,7 @@ import platform
 import sys
 import signal
 import os
+from daily_shutdown_config import DailyShutdownConfig
 
 
 class ShutdownReminderCLI:
@@ -21,6 +22,8 @@ class ShutdownReminderCLI:
         self.timer_thread = None
         self.is_running = False
         self.shutdown_cancelled = False
+        self.daily_mode = False
+        self.config = DailyShutdownConfig()
         
         # Handle Ctrl+C gracefully
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -43,8 +46,99 @@ class ShutdownReminderCLI:
         print(f"当前时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"操作系统: {platform.system()} {platform.release()}")
         print()
+        
+        # Show daily mode status
+        if self.config.is_daily_mode_enabled():
+            print("🔄 Daily Mode Status:")
+            print(self.config.get_config_info())
+            print()
     
-    def get_user_time(self):
+    def show_main_menu(self):
+        """显示主菜单"""
+        while True:
+            print("\n请选择运行模式:")
+            print("1. 单次关机提醒 (One-time reminder)")
+            print("2. 每日定时关机 (Daily shutdown)")
+            print("3. 配置每日关机 (Configure daily shutdown)")
+            print("4. 显示配置信息 (Show configuration)")
+            print("5. 退出程序 (Exit)")
+            
+            if self.config.is_daily_mode_enabled():
+                print("6. 启动每日后台模式 (Start daily background mode)")
+            
+            try:
+                choice = input("\n请输入选择 (1-6): ").strip()
+                
+                if choice == '1':
+                    return 'single'
+                elif choice == '2':
+                    if not self.config.is_daily_mode_enabled():
+                        print("❌ 每日模式未配置，请先选择选项3进行配置")
+                        continue
+                    return 'daily'
+                elif choice == '3':
+                    self.configure_daily_shutdown()
+                elif choice == '4':
+                    print("\n" + self.config.get_config_info())
+                elif choice == '5':
+                    print("👋 程序退出")
+                    sys.exit(0)
+                elif choice == '6' and self.config.is_daily_mode_enabled():
+                    return 'background'
+                else:
+                    print("❌ 无效选择，请重新输入")
+                    
+            except KeyboardInterrupt:
+                self.signal_handler(None, None)
+    
+    def configure_daily_shutdown(self):
+        """配置每日关机"""
+        print("\n配置每日定时关机:")
+        
+        # Get daily shutdown time
+        while True:
+            try:
+                print("设置每日关机时间:")
+                hour_input = input("小时 (0-23): ").strip()
+                minute_input = input("分钟 (0-59): ").strip()
+                
+                hour = int(hour_input)
+                minute = int(minute_input)
+                
+                if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+                    print("❌ 时间格式错误，请重新输入！\n")
+                    continue
+                
+                break
+                
+            except ValueError:
+                print("❌ 请输入有效的数字！\n")
+            except KeyboardInterrupt:
+                self.signal_handler(None, None)
+        
+        # Configure auto-shutdown
+        while True:
+            auto_confirm = input("\n启用自动关机模式（无需用户确认）? (y/n): ").strip().lower()
+            if auto_confirm in ['y', 'yes', '是']:
+                auto_shutdown = True
+                break
+            elif auto_confirm in ['n', 'no', '否']:
+                auto_shutdown = False
+                break
+            else:
+                print("请输入 y 或 n")
+        
+        # Save configuration
+        if self.config.set_daily_shutdown_time(hour, minute):
+            self.config.set_auto_shutdown(auto_shutdown)
+            auto_text = "启用" if auto_shutdown else "禁用"
+            print(f"\n✅ 每日关机配置已保存:")
+            print(f"  • 关机时间: {hour:02d}:{minute:02d}")
+            print(f"  • 自动关机: {auto_text}")
+            print(f"  • 下次关机: {self.config.get_next_daily_shutdown().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("\n💡 现在可以选择选项2或6来启动每日关机模式")
+        else:
+            print("❌ 配置保存失败")
         """获取用户输入的时间"""
         while True:
             try:
@@ -156,6 +250,10 @@ class ShutdownReminderCLI:
         print("🔔" * 50)
         print(f"⏰ 当前时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"📅 设定时间: {self.reminder_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if self.daily_mode:
+            print("🔄 每日关机模式已启用")
+        
         print()
         
         # Ask user what to do
@@ -165,18 +263,31 @@ class ShutdownReminderCLI:
             print("2. 取消关机 (Cancel)")
             print("3. 延迟关机 (Delay)")
             
+            if self.daily_mode:
+                print("4. 跳过今天，明天继续 (Skip today, continue tomorrow)")
+            
             try:
-                choice = input("\n请输入选择 (1/2/3): ").strip()
+                choice = input(f"\n请输入选择 (1-{4 if self.daily_mode else 3}): ").strip()
                 
                 if choice == '1':
                     self.shutdown_computer()
+                    if self.daily_mode:
+                        self.schedule_next_daily_shutdown()
                     break
                 elif choice == '2':
                     self.shutdown_cancelled = True
                     print("✅ 已取消关机")
+                    if self.daily_mode:
+                        print("🔄 每日模式已停止")
+                        self.daily_mode = False
+                        self.config.set_daily_mode(False)
                     break
                 elif choice == '3':
                     self.delay_shutdown()
+                    break
+                elif choice == '4' and self.daily_mode:
+                    print("⏭️ 跳过今天的关机，安排明天继续")
+                    self.schedule_next_daily_shutdown()
                     break
                 else:
                     print("❌ 无效选择，请重新输入")
@@ -268,14 +379,31 @@ class ShutdownReminderCLI:
         try:
             self.display_banner()
             
-            while True:
-                reminder_time = self.get_user_time()
-                
-                if self.confirm_setting(reminder_time):
-                    self.start_reminder(reminder_time)
-                    break
-                else:
-                    print("❌ 已取消设置，请重新输入\n")
+            mode = self.show_main_menu()
+            
+            if mode == 'single':
+                # Original single-time mode
+                while True:
+                    reminder_time = self.get_user_time()
+                    
+                    if self.confirm_setting(reminder_time):
+                        self.start_reminder(reminder_time)
+                        break
+                    else:
+                        print("❌ 已取消设置，请重新输入\n")
+            
+            elif mode == 'daily':
+                # Daily mode with user interaction
+                self.daily_mode = True
+                next_shutdown = self.config.get_next_daily_shutdown()
+                print(f"\n🔄 启动每日关机模式")
+                print(f"📅 下次关机时间: {next_shutdown.strftime('%Y-%m-%d %H:%M:%S')}")
+                self.start_daily_reminder(next_shutdown)
+            
+            elif mode == 'background':
+                # Background daily mode
+                self.daily_mode = True
+                self.run_background_mode()
             
             # Wait for thread to complete
             if self.timer_thread and self.timer_thread.is_alive():
@@ -288,6 +416,114 @@ class ShutdownReminderCLI:
             self.signal_handler(None, None)
         except Exception as e:
             print(f"❌ 程序出现错误: {e}")
+    
+    def start_daily_reminder(self, next_shutdown_time):
+        """启动每日关机提醒"""
+        self.reminder_time = next_shutdown_time
+        self.is_running = True
+        
+        print("\n✅ 每日关机提醒已启动！")
+        print("💡 按 Ctrl+C 可以随时取消")
+        print("=" * 50)
+        
+        # Start timer thread
+        self.timer_thread = threading.Thread(target=self.daily_timer_worker, daemon=True)
+        self.timer_thread.start()
+        
+        # Main loop - show countdown
+        self.show_countdown()
+    
+    def daily_timer_worker(self):
+        """每日定时器工作线程"""
+        while self.is_running:
+            now = datetime.datetime.now()
+            if now >= self.reminder_time:
+                # If in daily mode, handle shutdown and reschedule
+                if self.daily_mode:
+                    if self.config.is_auto_shutdown_enabled():
+                        # Auto shutdown without confirmation
+                        self.auto_daily_shutdown()
+                    else:
+                        # Show reminder as usual
+                        pass
+                
+                self.is_running = False
+                break
+            time.sleep(1)
+    
+    def auto_daily_shutdown(self):
+        """自动每日关机（无用户确认）"""
+        print(f"\n\n🔔 每日关机时间到了！ {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("🔄 自动关机模式已启用，准备关机...")
+        
+        # Execute shutdown directly
+        try:
+            system = platform.system()
+            print(f"💻 检测到操作系统: {system}")
+            
+            if system == "Windows":
+                subprocess.run(["shutdown", "/s", "/t", "10"], check=True)
+            elif system == "Darwin":  # macOS
+                subprocess.run(["sudo", "shutdown", "-h", "+1"], check=True)
+            elif system == "Linux":
+                subprocess.run(["shutdown", "-h", "+1"], check=True)
+            
+            print("✅ 关机命令已执行")
+            
+        except Exception as e:
+            print(f"❌ 自动关机失败: {e}")
+            
+        # Schedule next daily shutdown
+        self.schedule_next_daily_shutdown()
+    
+    def schedule_next_daily_shutdown(self):
+        """安排下一次每日关机"""
+        if not self.daily_mode:
+            return
+            
+        next_shutdown = self.config.get_next_daily_shutdown()
+        print(f"📅 已安排下次关机: {next_shutdown.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Restart timer for next day
+        self.reminder_time = next_shutdown
+        self.is_running = True
+        self.timer_thread = threading.Thread(target=self.daily_timer_worker, daemon=True)
+        self.timer_thread.start()
+    
+    def run_background_mode(self):
+        """运行后台模式"""
+        print("\n🔄 启动每日后台关机模式...")
+        print("💡 程序将在后台运行，每天定时关机")
+        print("💡 按 Ctrl+C 可以随时退出")
+        
+        next_shutdown = self.config.get_next_daily_shutdown()
+        print(f"📅 下次关机时间: {next_shutdown.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if not self.config.is_auto_shutdown_enabled():
+            print("⚠️  提醒: 自动关机未启用，到时间时仍需要用户确认")
+        
+        print("=" * 50)
+        
+        # Start daily timer in background
+        self.daily_mode = True
+        self.reminder_time = next_shutdown
+        self.is_running = True
+        
+        # Start timer thread
+        self.timer_thread = threading.Thread(target=self.daily_timer_worker, daemon=True)
+        self.timer_thread.start()
+        
+        # Keep program running
+        try:
+            while self.is_running:
+                time.sleep(60)  # Check every minute
+                
+                # Check if we need to reschedule
+                if not self.timer_thread.is_alive() and self.daily_mode:
+                    self.schedule_next_daily_shutdown()
+                    
+        except KeyboardInterrupt:
+            self.signal_handler(None, None)
 
 
 def show_help():
